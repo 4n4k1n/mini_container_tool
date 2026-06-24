@@ -41,6 +41,15 @@ func parent() {
 func child() {
 	fmt.Println("child pid:", os.Getpid())
 
+	must(syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""))
+	must(syscall.Mount("rootfs", "rootfs", "", syscall.MS_BIND, ""))
+	must(os.MkdirAll("rootfs/oldrootfs", 0700))
+	must(syscall.PivotRoot("rootfs", "rootfs/oldrootfs"))
+	must(os.Chdir("/"))
+	must(syscall.Unmount("/oldrootfs", syscall.MNT_DETACH))
+	must(os.Remove("/oldrootfs"))
+	must(syscall.Mount("proc", "proc", "proc", 0, ""))
+
 	// execution in child process
 	cmd := exec.Command(os.Args[2], os.Args[3:]...)
 
