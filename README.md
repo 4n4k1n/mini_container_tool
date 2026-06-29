@@ -5,14 +5,14 @@ Minimal Linux container runtime in Go. Pulls OCI images from Docker Hub and runs
 ## Setup
 
 ```bash
-go build -o container .
+	make build
 ```
 
 ## Usage
 
 ```bash
-sudo ./container run alpine
-sudo ./container run alpine /bin/ls
+./container run alpine
+./container run alpine /bin/ls
 ```
 
 ## How it works
