@@ -2,3 +2,4 @@ rootfs/
 alpine-minirootfs.tar.gz
 container
 go.sum
+mini_container_tool
