@@ -15,10 +15,11 @@ import (
 )
 
 type spec struct {
-	Layers  []string
-	Cmd     []string
-	Env     []string
-	WorkDir string
+	Layers   []string
+	Cmd      []string
+	Env      []string
+	WorkDir  string
+	Hostname string
 }
 
 func main() {
@@ -40,6 +41,7 @@ func parent() {
 	flags := flag.NewFlagSet("run", flag.ExitOnError)
 	memFlag := flags.String("memory", "", "memory limit (e.g. 256m, 1g)")
 	cpusFlag := flags.Float64("cpus", 0, "cpu limit (e.g. 0.5, 2)")
+	hostName := flags.String("hostname", "container", "set name of the container")
 	flags.Parse(os.Args[2:])
 	args := flags.Args()
 	usageCheck(len(args)+2, 3, "Usage:  ./container run IMAGE [COMMAND] [ARG...]")
@@ -64,7 +66,7 @@ func parent() {
 	// write spec to temp file, child reads it after fork
 	f, err := os.CreateTemp("", "container*.json")
 	must(err)
-	must(json.NewEncoder(f).Encode(spec{layers, cmd, result.Config.Env, result.Config.WorkingDir}))
+	must(json.NewEncoder(f).Encode(spec{layers, cmd, result.Config.Env, result.Config.WorkingDir, *hostName}))
 	f.Close()
 
 	// set up cgroup before fork
@@ -78,8 +80,6 @@ func parent() {
 	c := exec.Command("/proc/self/exe", "child", f.Name())
 	c.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS,
-		// map our uid/gid to root inside the new user namespace so the
-		// child can create namespaces and mount without real root
 		UidMappings: []syscall.SysProcIDMap{
 			{ContainerID: 0, HostID: os.Getuid(), Size: 1},
 		},
@@ -150,8 +150,13 @@ func child() {
 	must(json.NewDecoder(f).Decode(&s))
 	f.Close()
 
-	// overlayfs dirs: upper=writable, work=scratch, merged=container view
-	upper, work, merged := "/tmp/overlay/upper", "/tmp/overlay/work", "/tmp/overlay/merged"
+	// mount our own tmpfs for upper/work/merged — tmpfs owned by this user
+	// namespace supports xattrs, which overlayfs needs for userxattr mode
+	workBase := "/tmp/container-work"
+	os.RemoveAll(workBase)
+	os.MkdirAll(workBase, 0755)
+	must(syscall.Mount("tmpfs", workBase, "tmpfs", 0, ""))
+	upper, work, merged := workBase+"/upper", workBase+"/work", workBase+"/merged"
 	os.MkdirAll(upper, 0755)
 	os.MkdirAll(work, 0755)
 	os.MkdirAll(merged, 0755)
@@ -161,7 +166,7 @@ func child() {
 	for i, l := range s.Layers {
 		lowerdirs[len(s.Layers)-1-i] = l
 	}
-	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", strings.Join(lowerdirs, ":"), upper, work)
+	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s,userxattr", strings.Join(lowerdirs, ":"), upper, work)
 
 	// stop mounts leaking to host
 	must(syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""))
@@ -176,6 +181,7 @@ func child() {
 	// swap root to merged, park old root at oldrootfs
 	must(os.MkdirAll(filepath.Join(merged, "oldrootfs"), 0700))
 	must(syscall.PivotRoot(merged, filepath.Join(merged, "oldrootfs")))
+	must(syscall.Sethostname([]byte(s.Hostname)))
 	must(os.Chdir("/"))
 	// hide host filesystem
 	must(syscall.Unmount("/oldrootfs", syscall.MNT_DETACH))
