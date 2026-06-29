@@ -20,11 +20,11 @@ type spec struct {
 }
 
 func main() {
-	usageCheck(len(os.Args), 2, "Usage: ./container COMMAND")
+	usageCheck(len(os.Args), 2, "Usage:  ./container COMMAND")
 
 	switch os.Args[1] {
 	case "run":
-		usageCheck(len(os.Args), 3, "Usage: ./container run IMAGE [COMMAND] [ARG...]")
+		usageCheck(len(os.Args), 3, "Usage:  ./container run IMAGE [COMMAND] [ARG...]")
 		parent()
 	case "child":
 		child()
@@ -138,6 +138,7 @@ func must(err error) {
 
 func usageCheck(argc int, required_argc int, message string) {
 	if argc < required_argc {
-		panic(message)
+		fmt.Println(message)
+		os.Exit(1)
 	}
 }

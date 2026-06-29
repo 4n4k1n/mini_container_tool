@@ -1,4 +1,4 @@
-module mini_container_tool
+module container
 
 go 1.24.4
 
