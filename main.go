@@ -29,7 +29,7 @@ func main() {
 
 func must(err error) {
 	if err != nil {
-		panic(err)
+		panic(Red + err.Error() + Reset)
 	}
 }
 
