@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"syscall"
 
@@ -21,10 +22,23 @@ func parent() {
 	args := flags.Args()
 	usageCheck(len(args)+2, 3, "Usage:  ./container run IMAGE [COMMAND] [ARG...]")
 
-	// pull image from registry
+	// pull image from registry, or reuse a previous pull if cached on disk
 	image := args[0]
-	result, err := ociregistry.Pull(image, "latest", "/tmp/oci/"+image)
-	must(err)
+	dest := "/tmp/oci/" + image
+	metaPath := filepath.Join(dest, "pull.json")
+
+	var result *ociregistry.PullResult
+	if data, err := os.ReadFile(metaPath); err == nil {
+		// cached: reconstruct the pull result without hitting the registry
+		result = &ociregistry.PullResult{}
+		must(json.Unmarshal(data, result))
+	} else {
+		result, err = ociregistry.Pull(image, "latest", dest)
+		must(err)
+		data, err := json.Marshal(result)
+		must(err)
+		must(os.WriteFile(metaPath, data, 0644))
+	}
 
 	// build command: entrypoint + cmd, overridable from args
 	cmd := append(result.Config.Entrypoint, result.Config.Cmd...)
