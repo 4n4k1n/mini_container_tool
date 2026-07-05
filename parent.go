@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,22 +24,7 @@ func parent() {
 	usageCheck(len(args)+2, 3, "Usage:  ./container run IMAGE [COMMAND] [ARG...]")
 
 	// pull image from registry, or reuse a previous pull if cached on disk
-	image := args[0]
-	dest := "/tmp/oci/" + image
-	metaPath := filepath.Join(dest, "pull.json")
-
-	var result *ociregistry.PullResult
-	if data, err := os.ReadFile(metaPath); err == nil {
-		// cached: reconstruct the pull result without hitting the registry
-		result = &ociregistry.PullResult{}
-		must(json.Unmarshal(data, result))
-	} else {
-		result, err = ociregistry.Pull(image, "latest", dest)
-		must(err)
-		data, err := json.Marshal(result)
-		must(err)
-		must(os.WriteFile(metaPath, data, 0644))
-	}
+	result := pullImage(args[0])
 
 	// build command: entrypoint + cmd, overridable from args
 	cmd := append(result.Config.Entrypoint, result.Config.Cmd...)
@@ -90,4 +76,25 @@ func parent() {
 	if cgroupPath != "" {
 		os.Remove(cgroupPath)
 	}
+}
+
+func pullImage(image string) *ociregistry.PullResult {
+	dest := "/tmp/oci/" + image
+	metaPath := filepath.Join(dest, "pull.json")
+
+	var result *ociregistry.PullResult
+	if data, err := os.ReadFile(metaPath); err == nil {
+		// cached: reconstruct the pull result without hitting the registry
+		fmt.Println("Found local image.")
+		result = &ociregistry.PullResult{}
+		must(json.Unmarshal(data, result))
+	} else {
+		fmt.Println("Pulling image from registry.")
+		result, err = ociregistry.Pull(image, "latest", dest)
+		must(err)
+		data, err := json.Marshal(result)
+		must(err)
+		must(os.WriteFile(metaPath, data, 0644))
+	}
+	return result
 }

@@ -17,6 +17,9 @@ func main() {
 	case "run":
 		usageCheck(len(os.Args), 3, "Usage:  ./container run IMAGE [COMMAND] [ARG...]")
 		parent()
+	case "pull":
+		usageCheck(len(os.Args), 3, "Usage:  ./container pull IMAGE")
+		pullImage(os.Args[2])
 	case "child":
 		child()
 	default:
