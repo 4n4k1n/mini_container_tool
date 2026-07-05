@@ -8,7 +8,7 @@ RESET := \033[0m
 run:
 	go run . || true
 
-build:
+b:
 	go build -o container .
 
 clean:

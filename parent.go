@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/4n4k1n/ociregistry"
@@ -23,53 +25,52 @@ func parent() {
 	args := flags.Args()
 	usageCheck(len(args)+2, 3, "Usage:  ./container run IMAGE [COMMAND] [ARG...]")
 
-	// pull image from registry, or reuse a previous pull if cached on disk
 	result := pullImage(args[0])
 
-	// build command: entrypoint + cmd, overridable from args
 	cmd := append(result.Config.Entrypoint, result.Config.Cmd...)
 	if len(args) > 1 {
 		cmd = args[1:]
 	}
 
-	// extract layer dirs for overlayfs
 	var layers []string
 	for _, l := range result.Layers {
 		layers = append(layers, l.Dir)
 	}
 
-	// write spec to temp file, child reads it after fork
+	// the child reads its config from this temp file
 	f, err := os.CreateTemp("", "container*.json")
 	must(err)
 	must(json.NewEncoder(f).Encode(spec{layers, cmd, result.Config.Env, result.Config.WorkingDir, *hostname}))
 	f.Close()
 
-	// set up cgroup before fork so we can write child PID after
 	cgroupPath := ""
 	if *memFlag != "" || *cpusFlag > 0 {
 		cgroupPath, err = setupCgroup(*memFlag, *cpusFlag)
 		must(err)
 	}
 
-	// re-exec self as child inside new namespaces
+	// lets us hold the child until its id maps are written
+	syncR, syncW, err := os.Pipe()
+	must(err)
+
+	// No Uid/GidMappings here: unprivileged, Go could only map a single id.
+	// writeIDMaps maps a full range below with newuidmap/newgidmap instead.
 	c := exec.Command("/proc/self/exe", "child", f.Name())
 	c.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS,
-		UidMappings: []syscall.SysProcIDMap{
-			{ContainerID: 0, HostID: os.Getuid(), Size: 1},
-		},
-		GidMappings: []syscall.SysProcIDMap{
-			{ContainerID: 0, HostID: os.Getgid(), Size: 1},
-		},
-		GidMappingsEnableSetgroups: false,
 	}
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	c.ExtraFiles = []*os.File{syncR} // fd 3 in the child
 	must(c.Start())
+	syncR.Close()
 
-	// add child to cgroup after fork so we have its PID
+	must(writeIDMaps(c.Process.Pid))
+
 	if cgroupPath != "" {
 		must(os.WriteFile(cgroupPath+"/cgroup.procs", []byte(strconv.Itoa(c.Process.Pid)), 0644))
 	}
+
+	syncW.Close() // maps are ready, let the child run
 
 	c.Wait()
 	os.Remove(f.Name())
@@ -78,13 +79,57 @@ func parent() {
 	}
 }
 
+// writeIDMaps gives the child uid/gid 0 plus the user's subordinate range, so
+// programs inside can switch ids (e.g. apt's _apt).
+func writeIDMaps(pid int) error {
+	u, err := user.Current()
+	if err != nil {
+		return err
+	}
+	if err := idMap("newuidmap", pid, os.Getuid(), "/etc/subuid", u.Username); err != nil {
+		return err
+	}
+	return idMap("newgidmap", pid, os.Getgid(), "/etc/subgid", u.Username)
+}
+
+func idMap(tool string, pid, hostID int, subFile, username string) error {
+	start, count, err := parseSubID(subFile, username)
+	if err != nil {
+		return err
+	}
+	// container 0 -> our host id, then 1.. -> the subordinate range
+	out, err := exec.Command(tool, strconv.Itoa(pid),
+		"0", strconv.Itoa(hostID), "1",
+		"1", strconv.Itoa(start), strconv.Itoa(count)).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %v: %s", tool, err, out)
+	}
+	return nil
+}
+
+// parseSubID reads a "name:start:count" line from /etc/subuid or /etc/subgid.
+func parseSubID(path, username string) (start, count int, err error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if p := strings.Split(line, ":"); len(p) == 3 && p[0] == username {
+			start, _ = strconv.Atoi(p[1])
+			count, _ = strconv.Atoi(p[2])
+			return start, count, nil
+		}
+	}
+	return 0, 0, fmt.Errorf("no entry for %q in %s", username, path)
+}
+
 func pullImage(image string) *ociregistry.PullResult {
 	dest := "/tmp/oci/" + image
 	metaPath := filepath.Join(dest, "pull.json")
 
 	var result *ociregistry.PullResult
 	if data, err := os.ReadFile(metaPath); err == nil {
-		// cached: reconstruct the pull result without hitting the registry
+		// reuse the cached pull
 		fmt.Println("Found local image.")
 		result = &ociregistry.PullResult{}
 		must(json.Unmarshal(data, result))

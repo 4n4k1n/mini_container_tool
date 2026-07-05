@@ -10,7 +10,20 @@ import (
 	"syscall"
 )
 
+// child (stage 1) lost its capabilities by exec'ing as an unmapped uid. It
+// waits on fd 3 for the parent to write its id maps, then re-execs: the second
+// exec runs as uid 0 and regains full caps for child2.
 func child() {
+	if sync := os.NewFile(3, "sync"); sync != nil {
+		sync.Read(make([]byte, 1))
+		sync.Close()
+	}
+	args := append([]string{"/proc/self/exe", "child2"}, os.Args[2:]...)
+	must(syscall.Exec("/proc/self/exe", args, os.Environ()))
+}
+
+// child2 is stage 2: uid 0 with full caps, so it can mount and pivot_root.
+func child2() {
 	// read spec passed from parent
 	f, err := os.Open(os.Args[2])
 	must(err)
@@ -36,8 +49,7 @@ func child() {
 }
 
 func mountOverlay(layers []string) {
-	// mount our own tmpfs for upper/work/merged — tmpfs owned by this user
-	// namespace supports xattrs, which overlayfs needs for userxattr mode
+	// our own tmpfs, so overlayfs gets the xattrs userxattr mode needs
 	workBase := "/tmp/container-work"
 	os.RemoveAll(workBase)
 	os.MkdirAll(workBase, 0755)
@@ -50,19 +62,26 @@ func mountOverlay(layers []string) {
 	os.MkdirAll(work, 0755)
 	os.MkdirAll(merged, 0755)
 
-	// lowerdir: top layer first (overlayfs priority order)
+	// overlayfs wants the top layer first
 	lowerdirs := make([]string, len(layers))
 	for i, l := range layers {
 		lowerdirs[len(layers)-1-i] = l
 	}
 	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s,userxattr", strings.Join(lowerdirs, ":"), upper, work)
 
-	// stop mounts leaking to host
+	// keep our mounts off the host
 	must(syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""))
 	must(syscall.Mount("overlay", merged, "overlay", 0, opts))
 
-	// mount /proc before pivot_root — required in unprivileged user namespaces
-	// (kernel needs a visible proc instance before allowing a new one to be mounted)
+	// the image's resolv.conf is a dead symlink; we share the host net
+	// namespace, so give it the host's working resolver
+	if data, err := os.ReadFile("/etc/resolv.conf"); err == nil {
+		dst := filepath.Join(merged, "etc/resolv.conf")
+		os.Remove(dst)
+		must(os.WriteFile(dst, data, 0644))
+	}
+
+	// mount /proc before pivot_root, or the kernel rejects the new proc
 	must(os.MkdirAll(filepath.Join(merged, "proc"), 0755))
 	must(syscall.Mount("proc", filepath.Join(merged, "proc"), "proc", 0, ""))
 }

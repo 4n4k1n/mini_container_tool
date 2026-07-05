@@ -22,6 +22,8 @@ func main() {
 		pullImage(os.Args[2])
 	case "child":
 		child()
+	case "child2":
+		child2()
 	default:
 		panic("unknown command")
 	}
